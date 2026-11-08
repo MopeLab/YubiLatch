@@ -1,0 +1,13 @@
+**/bin/
+**/obj/
+.vs/
+.buildhome/
+.packages/
+artifacts/
+build/
+*.user
+*.suo
+*.pfx
+*.dmp
+TestResults/
+
