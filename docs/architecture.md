@@ -30,7 +30,7 @@ Winlogon / LSA：最终验证 MSA 密码
 
 ## 认证与绑定
 
-- 使用 Yubico 官方 [.NET SDK](https://docs.yubico.com/yesdk/users-manual/application-otp/challenge-response.html)。只编程未配置的 OTP 长按槽位 2，20 字节随机秘钥，强制 `UseButton()`，不重置设备，不触碰 FIDO2、PIV、OpenPGP 或短按槽位。已有长按槽位一律拒绝覆盖。
+- 使用 Yubico 官方 [.NET SDK](https://docs.yubico.com/yesdk/users-manual/application-otp/challenge-response.html)。只编程未配置的 OTP 长按槽位 2，20 字节随机秘钥，强制 `UseButton()`，并设置随机 6 字节槽位管理码防止任意软件更新触摸策略。不重置设备，不触碰 FIDO2、PIV、OpenPGP 或短按槽位。已有长按槽位一律拒绝覆盖。管理码可在账户重新认证后单独查看，删除绑定前应备份；不会导出 HMAC 秘钥。
 - 每次操作产生 64 字节 CSPRNG 挑战，使用完整 20 字节 HMAC-SHA1 响应、固定时间比较。SHA-1 碰撞攻击不等同于 HMAC 伪造；选择此算法源于硬件 OTP 协议限制。
 - 服务保留对称验证秘钥的 SYSTEM DPAPI 密文。这是共享秘钥认证，不是 FIDO2 公钥认证；具有 SYSTEM 权限的攻击者可解密验证秘钥及密码。
 - 先验证密码和恢复确认，再持久化 pending 记录，最后编程空槽位并实际验证触摸。验证成功才激活绑定。断电中断留下的 pending 记录可通过管理器恢复验证，绝不悄悄重写槽位。

@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/YubiLatch.App/YubiLatch.App.csproj" />
+    <Project Path="src/YubiLatch.Core/YubiLatch.Core.csproj" />
+    <Project Path="src/YubiLatch.Service/YubiLatch.Service.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/YubiLatch.Core.Tests/YubiLatch.Core.Tests.csproj" />
+  </Folder>
+</Solution>

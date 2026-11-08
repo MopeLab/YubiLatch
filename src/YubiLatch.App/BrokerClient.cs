@@ -14,14 +14,22 @@ internal static partial class BrokerClient
     [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint pid);
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    private static partial nint OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint pid);
-    [LibraryImport("kernel32.dll")]
+    [LibraryImport("advapi32.dll", EntryPoint = "OpenSCManagerW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    private static partial nint OpenSCManager(string? machine, string? database, uint access);
+    [LibraryImport("advapi32.dll", EntryPoint = "OpenServiceW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    private static partial nint OpenService(nint manager, string name, uint access);
+    [LibraryImport("advapi32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool CloseHandle(nint handle);
+    private static partial bool CloseServiceHandle(nint handle);
     [LibraryImport("advapi32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool OpenProcessToken(nint process, uint access, out SafeAccessTokenHandle token);
+    private static partial bool QueryServiceStatusEx(nint service, int level, out ServiceStatus status, int size, out int needed);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ServiceStatus
+    {
+        public uint Type, State, ControlsAccepted, Win32ExitCode, ServiceExitCode, CheckPoint, WaitHint, ProcessId, Flags;
+    }
 
     public static async Task<ManagementReply> Send(ManagementRequest request)
     {
@@ -31,16 +39,22 @@ internal static partial class BrokerClient
         await pipe.ConnectAsync(1500, timeout.Token);
         // Authenticate the endpoint BEFORE sending any password. A pipe name is not an identity.
         if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle, out var pid)) throw new Win32Exception();
-        var process = OpenProcess(0x1000 /* QUERY_LIMITED_INFORMATION */, false, pid);
-        if (process == 0) throw new Win32Exception();
+        // SCM's protected service-to-PID mapping is readable by standard users. Opening a SYSTEM
+        // process token is not reliably permitted and would break non-elevated management.
+        var manager = OpenSCManager(null, null, 1 /* SC_MANAGER_CONNECT */);
+        if (manager == 0) throw new Win32Exception();
         try
         {
-            if (!OpenProcessToken(process, 8 /* TOKEN_QUERY */, out var token)) throw new Win32Exception();
-            using (token)
-            using (var identity = new WindowsIdentity(token.DangerousGetHandle()))
-                if (!identity.IsSystem) throw new UnauthorizedAccessException();
+            var service = OpenService(manager, "YubiLatch", 4 /* SERVICE_QUERY_STATUS */);
+            if (service == 0) throw new Win32Exception();
+            try
+            {
+                if (!QueryServiceStatusEx(service, 0, out var status, Marshal.SizeOf<ServiceStatus>(), out _)) throw new Win32Exception();
+                if (status.State != 4 /* RUNNING */ || status.ProcessId != pid) throw new UnauthorizedAccessException();
+            }
+            finally { CloseServiceHandle(service); }
         }
-        finally { CloseHandle(process); }
+        finally { CloseServiceHandle(manager); }
         var bytes = JsonSerializer.SerializeToUtf8Bytes(request, Wire.Json);
         byte[]? response = null;
         try
