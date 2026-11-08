@@ -22,6 +22,7 @@ internal sealed class Vault
         for (DirectoryInfo? node = new(_root); node != null; node = node.Parent)
             if ((node.Attributes & FileAttributes.ReparsePoint) != 0)
                 throw new UnauthorizedAccessException("Reparse points are not allowed.");
+        CheckParent();
         var acl = new DirectoryInfo(_root).GetAccessControl();
         if (!acl.AreAccessRulesProtected) throw new UnauthorizedAccessException("Vault inheritance must be disabled.");
         var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
@@ -31,6 +32,21 @@ internal sealed class Vault
         foreach (FileSystemAccessRule rule in acl.GetAccessRules(true, true, typeof(SecurityIdentifier)))
             if (rule.AccessControlType == AccessControlType.Allow && rule.IdentityReference != system && rule.IdentityReference != admins)
                 throw new UnauthorizedAccessException("Untrusted vault access rule.");
+    }
+
+    private void CheckParent()
+    {
+        var acl = new DirectoryInfo(Path.GetDirectoryName(_root)!).GetAccessControl();
+        var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var admins = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+        var owner = acl.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        if (owner != system && owner != admins) throw new UnauthorizedAccessException("Untrusted parent owner.");
+        const FileSystemRights dangerous = FileSystemRights.Write | FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles
+            | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
+        foreach (FileSystemAccessRule rule in acl.GetAccessRules(true, true, typeof(SecurityIdentifier)))
+            if (rule.AccessControlType == AccessControlType.Allow && rule.IdentityReference != system && rule.IdentityReference != admins
+                && (rule.FileSystemRights & dangerous) != 0)
+                throw new UnauthorizedAccessException("Untrusted parent access rule.");
     }
 
     private string FileFor(string sid)

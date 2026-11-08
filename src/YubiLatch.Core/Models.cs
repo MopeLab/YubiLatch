@@ -10,6 +10,7 @@ public sealed class KeyBinding
     public int Serial { get; set; }
     public string Name { get; set; } = "YubiKey";
     public byte[] Secret { get; set; } = [];
+    public byte[] AccessCode { get; set; } = [];
     public BindingState State { get; set; }
     public DateTimeOffset CreatedUtc { get; set; } = DateTimeOffset.UtcNow;
 }
@@ -31,7 +32,8 @@ public sealed class AccountRecord : IDisposable
             || PasswordUtf16.Length is < 2 or > 1024 || PasswordUtf16.Length % 2 != 0
             || Keys.Count > 16 || Keys.Select(k => k.Id).Distinct().Count() != Keys.Count
             || Keys.Select(k => k.Serial).Distinct().Count() != Keys.Count
-            || Keys.Any(k => k.Secret.Length != 20 || k.Serial <= 0 || k.Name.Length is < 1 or > 64
+            || Keys.Any(k => k.Secret.Length != 20 || k.AccessCode.Length != 6 || k.AccessCode.All(b => b == 0)
+                || k.Serial <= 0 || k.Name.Length is < 1 or > 64
                 || !Enum.IsDefined(k.State)))
             throw new InvalidDataException("Invalid account record.");
     }
@@ -39,7 +41,11 @@ public sealed class AccountRecord : IDisposable
     public void Dispose()
     {
         CryptographicOperations.ZeroMemory(PasswordUtf16);
-        foreach (var key in Keys) CryptographicOperations.ZeroMemory(key.Secret);
+        foreach (var key in Keys)
+        {
+            CryptographicOperations.ZeroMemory(key.Secret);
+            CryptographicOperations.ZeroMemory(key.AccessCode);
+        }
     }
 }
 
@@ -61,4 +67,4 @@ public sealed record ManagementRequest
 }
 
 public sealed record ManagementReply(bool Success, string Code, string Message,
-    AccountStatus? Account = null, IReadOnlyList<DeviceStatus>? Devices = null);
+    AccountStatus? Account = null, IReadOnlyList<DeviceStatus>? Devices = null, string? SlotManagementCode = null);

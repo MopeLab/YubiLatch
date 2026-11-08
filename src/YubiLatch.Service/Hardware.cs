@@ -37,7 +37,8 @@ internal sealed class Hardware
         using var otp = new OtpSession(Find(binding.Serial));
         if (otp.IsLongPressConfigured) throw new InvalidOperationException("Slot 2 is occupied.");
         // This is the ONLY device-writing operation in the application. Never overwrite/reset.
-        otp.ConfigureChallengeResponse(Slot.LongPress).UseHmacSha1().UseKey(binding.Secret).UseButton().Execute();
+        otp.ConfigureChallengeResponse(Slot.LongPress).UseHmacSha1().UseKey(binding.Secret).UseButton()
+            .SetNewAccessCode(new SlotAccessCode(binding.AccessCode)).Execute();
     }
 
     public bool Prove(KeyBinding binding)

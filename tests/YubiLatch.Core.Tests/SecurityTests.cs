@@ -87,10 +87,10 @@ public sealed class SecurityTests
     {
         using var account = ValidAccount();
         Assert.Throws<InvalidDataException>(() => account.Validate("S-1-5-21-999"));
-        account.Keys.Add(new KeyBinding { Serial = 1, Secret = new byte[19], Name = "备用" });
+        account.Keys.Add(new KeyBinding { Serial = 1, Secret = new byte[19], AccessCode = [1,2,3,4,5,6], Name = "备用" });
         Assert.Throws<InvalidDataException>(() => account.Validate(account.Sid));
         account.Keys[0].Secret = new byte[20];
-        account.Keys.Add(new KeyBinding { Serial = 1, Secret = new byte[20], Name = "重复" });
+        account.Keys.Add(new KeyBinding { Serial = 1, Secret = new byte[20], AccessCode = [1,2,3,4,5,6], Name = "重复" });
         Assert.Throws<InvalidDataException>(() => account.Validate(account.Sid));
     }
 
@@ -98,10 +98,21 @@ public sealed class SecurityTests
     public void AccountDisposalWipesAllSecrets()
     {
         var account = ValidAccount();
-        account.Keys.Add(new KeyBinding { Serial = 1, Secret = RandomNumberGenerator.GetBytes(20) });
+        account.Keys.Add(new KeyBinding { Serial = 1, Secret = RandomNumberGenerator.GetBytes(20), AccessCode = [1,2,3,4,5,6] });
         account.Dispose();
         Assert.All(account.PasswordUtf16, b => Assert.Equal(0, b));
         Assert.All(account.Keys[0].Secret, b => Assert.Equal(0, b));
+        Assert.All(account.Keys[0].AccessCode, b => Assert.Equal(0, b));
+    }
+
+    [Fact]
+    public void AccountRejectsUnprotectedSlotConfiguration()
+    {
+        using var account = ValidAccount();
+        account.Keys.Add(new KeyBinding { Serial = 12, Secret = new byte[20], AccessCode = new byte[6] });
+        Assert.Throws<InvalidDataException>(() => account.Validate(account.Sid));
+        account.Keys[0].AccessCode = [1,2,3,4,5,6];
+        account.Validate(account.Sid);
     }
 
     [Fact]

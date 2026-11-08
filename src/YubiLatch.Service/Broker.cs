@@ -73,13 +73,13 @@ internal sealed class Broker(Vault vault, Hardware hardware) : BackgroundService
 
     private void RequirePassword(Caller caller, string user, string password)
     {
-        // Bound failed and successful credential-validation calls before LogonUser to reduce lockout abuse.
+        // Limit failed validations before LogonUser to reduce account lockout abuse.
         if (!_passwordAttempts.TryGetValue(caller.Sid, out var attempts)) _passwordAttempts[caller.Sid] = attempts = new();
         var now = DateTimeOffset.UtcNow;
         while (attempts.TryPeek(out var oldest) && now - oldest > TimeSpan.FromMinutes(5)) attempts.Dequeue();
         if (attempts.Count >= 5) throw new UnauthorizedAccessException();
-        attempts.Enqueue(now);
-        WindowsIdentityChecks.VerifyPassword(caller, user, password);
+        try { WindowsIdentityChecks.VerifyPassword(caller, user, password); attempts.Clear(); }
+        catch (UnauthorizedAccessException) { attempts.Enqueue(now); throw; }
     }
 
     private ManagementReply HandleManagement(Caller caller, ManagementRequest request)
@@ -106,7 +106,9 @@ internal sealed class Broker(Vault vault, Hardware hardware) : BackgroundService
                     PasswordUtf16 = Encoding.Unicode.GetBytes(request.Password)
                 } : null;
                 var account = existing ?? created!;
-                var binding = new KeyBinding { Serial = request.Serial, Name = request.KeyName.Trim(), Secret = RandomNumberGenerator.GetBytes(20) };
+                byte[] access;
+                do { access = RandomNumberGenerator.GetBytes(6); } while (access.All(b => b == 0));
+                var binding = new KeyBinding { Serial = request.Serial, Name = request.KeyName.Trim(), Secret = RandomNumberGenerator.GetBytes(20), AccessCode = access };
                 account.Keys.Add(binding);
                 // Persist first so interruption can be recovered without rewriting the hardware slot.
                 vault.Save(account);
@@ -114,7 +116,7 @@ internal sealed class Broker(Vault vault, Hardware hardware) : BackgroundService
                 if (!hardware.Prove(binding)) throw new CryptographicException();
                 binding.State = BindingState.Active;
                 vault.Save(account);
-                return new(true, "Ok", "绑定完成。硬件挑战响应及触摸验证已通过。", Snapshot(account));
+                return new(true, "Ok", "绑定完成。硬件挑战响应及触摸验证已通过。", Snapshot(account), SlotManagementCode: Convert.ToHexString(binding.AccessCode));
             }
             case "ResumePending":
             {
@@ -130,9 +132,17 @@ internal sealed class Broker(Vault vault, Hardware hardware) : BackgroundService
                 var account = existing ?? throw new InvalidDataException();
                 var key = account.Keys.Single(k => k.Id == request.KeyId);
                 CryptographicOperations.ZeroMemory(key.Secret);
+                CryptographicOperations.ZeroMemory(key.AccessCode);
                 account.Keys.Remove(key);
                 vault.Save(account);
                 return new(true, "Ok", "本机绑定已撤销。硬件槽位未被擦除。", Snapshot(account));
+            }
+            case "GetSlotManagementCode":
+            {
+                var account = existing ?? throw new InvalidDataException();
+                var key = account.Keys.Single(k => k.Id == request.KeyId);
+                return new(true, "Ok", "请将槽位管理码安全保管，用于将来通过 Yubico 工具解除槽位保护或重新配置。",
+                    SlotManagementCode: Convert.ToHexString(key.AccessCode));
             }
             case "SetEnabled":
             {
@@ -179,6 +189,26 @@ internal sealed class Broker(Vault vault, Hardware hardware) : BackgroundService
         await pipe.ReadExactlyAsync(sidBytes, readDeadline.Token);
         var sid = Encoding.Unicode.GetString(sidBytes);
         _ = new SecurityIdentifier(sid);
+        using var connection = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var disconnect = WatchDisconnect(pipe, connection);
+        try { await ServeLogon(pipe, operation, sid, connection.Token); }
+        finally { connection.Cancel(); await disconnect; }
+    }
+
+    private static async Task WatchDisconnect(Stream pipe, CancellationTokenSource connection)
+    {
+        try
+        {
+            // The request is complete; any further input or EOF cancels the attempt.
+            await pipe.ReadExactlyAsync(new byte[1], connection.Token);
+            connection.Cancel();
+        }
+        catch (OperationCanceledException) { }
+        catch (IOException) { connection.Cancel(); }
+    }
+
+    private async Task ServeLogon(Stream pipe, uint operation, string sid, CancellationToken ct)
+    {
         if (!await _gate.WaitAsync(TimeSpan.FromSeconds(1), ct)) { await ReplyLogon(pipe, Wire.Unavailable, ReadOnlyMemory<byte>.Empty, ct); return; }
         try
         {
