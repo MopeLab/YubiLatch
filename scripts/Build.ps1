@@ -68,6 +68,7 @@ try {
         @($dependencyIndex.Values | Sort-Object Package) | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $output 'dependencies.json') -Encoding utf8
         & (Join-Path $PSScriptRoot 'New-Manifest.ps1') -PackageRoot $output
         & (Join-Path $PSScriptRoot 'Verify-Package.ps1') -PackageRoot $output
+        & (Join-Path $PSScriptRoot 'Test-GuiStartup.ps1') -AppDirectory (Join-Path $output 'app')
         $archive = $output + '.zip'
         Compress-Archive -LiteralPath $output -DestinationPath $archive
         Get-FileHash -LiteralPath $archive -Algorithm SHA256 | Format-List

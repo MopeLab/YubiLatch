@@ -13,7 +13,8 @@ foreach ($entry in $manifest.Files) {
     if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $entry.Sha256) { throw "Hash mismatch: $($entry.Path)" }
 }
 foreach ($required in @('service\YubiLatch.Service.exe','service\coreclr.dll','service\Yubico.NativeShims.dll',
-    'app\YubiLatch.App.exe','app\coreclr.dll','app\Microsoft.ui.xaml.dll','provider\YubiLatch.CredentialProvider.dll',
+    'app\YubiLatch.App.exe','app\YubiLatch.App.pri','app\App.xbf','app\MainWindow.xbf',
+    'app\coreclr.dll','app\Microsoft.ui.xaml.dll','provider\YubiLatch.CredentialProvider.dll',
     'installer\Install.ps1','installer\Enable-Provider.ps1','installer\Disable-Provider.ps1','installer\Uninstall.ps1',
     'docs\recovery.md','dependencies.json','licenses\Yubico.YubiKey-1.18.1\LICENSE.txt')) {
     if (-not $names.Contains($required)) { throw "Required payload missing: $required" }

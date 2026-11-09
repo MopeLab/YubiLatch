@@ -19,4 +19,20 @@
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2957" />
     <EmbeddedResource Include="Strings/zh-CN.json" />
   </ItemGroup>
+  <!-- Unpackaged WinUI's publish pipeline omits the app PRI and compiled XAML.
+       Include build-generated resources in dotnet publish, preserving XAML subdirectories. -->
+  <Target Name="PublishWinUIResources" AfterTargets="ComputeFilesToPublish">
+    <Error Condition="!Exists('$(TargetDir)$(AssemblyName).pri')" Text="Application PRI was not generated." />
+    <ItemGroup>
+      <_PublishedXaml Include="$(TargetDir)**/*.xbf" Exclude="$(TargetDir)publish/**" />
+      <ResolvedFileToPublish Include="$(TargetDir)$(AssemblyName).pri">
+        <RelativePath>$(AssemblyName).pri</RelativePath>
+        <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+      <ResolvedFileToPublish Include="@(_PublishedXaml)">
+        <RelativePath>%(_PublishedXaml.RecursiveDir)%(_PublishedXaml.Filename)%(_PublishedXaml.Extension)</RelativePath>
+        <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
 </Project>
