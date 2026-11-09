@@ -14,12 +14,28 @@
 #include <memory>
 #include <new>
 #include <cstring>
+#include <cwchar>
+#include "PipeConnection.h"
 
 namespace {
 constexpr GUID ProviderId = {0xd53c2d8e,0x51cc,0x4f5d,{0x88,0xe6,0xa0,0xcd,0xf5,0xb3,0x9c,0x54}};
 constexpr wchar_t PipeName[] = L"\\\\.\\pipe\\MopeLab.YubiLatch.Logon.v1";
 constexpr DWORD Magic = 0x314c4259;
 std::atomic<long> Objects{0};
+
+// Fixed stages and numeric status codes only; never record account or credential data.
+void Trace(PCWSTR stage, HRESULT result = S_OK, DWORD detail = 0) noexcept {
+    const DWORD saved = GetLastError();
+    wchar_t message[192]{};
+    swprintf_s(message, L"Stage=%ls; HRESULT=0x%08lX; Detail=0x%08lX", stage, static_cast<unsigned long>(result), detail);
+    HANDLE source = RegisterEventSourceW(nullptr, L"YubiLatch");
+    if (source) {
+        PCWSTR strings[]{message};
+        ReportEventW(source, EVENTLOG_INFORMATION_TYPE, 0, 2200, nullptr, 1, 0, strings, nullptr);
+        DeregisterEventSource(source);
+    }
+    SetLastError(saved);
+}
 
 struct Handle {
     HANDLE value = INVALID_HANDLE_VALUE;
@@ -85,17 +101,19 @@ bool Transfer(HANDLE pipe, bool write, void* buffer, DWORD size, HANDLE cancel, 
 }
 
 bool AskService(const std::wstring& sid, DWORD operation, HANDLE cancel, Secret& password) {
-    Handle pipe(CreateFileW(PipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
-        FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr));
-    if (pipe.value == INVALID_HANDLE_VALUE || !IsTrustedServer(pipe.value)) return false;
+    const auto deadline = GetTickCount64() + (operation == 1 ? 1800 : 75000);
+    const auto connectDeadline = GetTickCount64() + 1800;
+    Handle pipe(ConnectLocalPipe(PipeName, cancel, connectDeadline < deadline ? connectDeadline : deadline));
+    if (pipe.value == INVALID_HANDLE_VALUE) { Trace(L"ProviderPipeConnectFailed", HRESULT_FROM_WIN32(GetLastError())); return false; }
+    if (!IsTrustedServer(pipe.value)) { Trace(L"ProviderServerRejected", E_ACCESSDENIED); return false; }
     DWORD session = 0;
     if (!ProcessIdToSessionId(GetCurrentProcessId(), &session) || session == 0 || sid.size() * sizeof(wchar_t) > 184) return false;
     DWORD request[]{Magic, operation, session, static_cast<DWORD>(sid.size() * sizeof(wchar_t))};
-    auto deadline = GetTickCount64() + (operation == 1 ? 1800 : 75000);
     if (!Transfer(pipe.value, true, request, sizeof(request), cancel, deadline)
-        || !Transfer(pipe.value, true, const_cast<wchar_t*>(sid.data()), request[3], cancel, deadline)) return false;
+        || !Transfer(pipe.value, true, const_cast<wchar_t*>(sid.data()), request[3], cancel, deadline)) { Trace(L"ProviderRequestFailed", HRESULT_FROM_WIN32(GetLastError())); return false; }
     DWORD reply[3]{};
-    if (!Transfer(pipe.value, false, reply, sizeof(reply), cancel, deadline) || reply[0] != Magic || reply[1] != 0) return false;
+    if (!Transfer(pipe.value, false, reply, sizeof(reply), cancel, deadline)) { Trace(L"ProviderReplyFailed", HRESULT_FROM_WIN32(GetLastError())); return false; }
+    if (reply[0] != Magic || reply[1] != 0) { Trace(L"ProviderReplyRejected", E_FAIL); return false; }
     if (operation == 1) return reply[2] == 0;
     if (reply[2] < 2 || reply[2] > 1024 || reply[2] % 2 != 0) return false;
     password.bytes.resize(static_cast<size_t>(reply[2]) + sizeof(wchar_t), 0);
@@ -121,6 +139,7 @@ class Credential final : public ICredentialProviderCredential2 {
     std::shared_ptr<Handle> activeCancel_;
     ULONGLONG readyUntil_ = 0;
     ICredentialProviderEvents* providerEvents_ = nullptr; // accessed on the LogonUI COM thread only
+    ICredentialProviderCredentialEvents* credentialEvents_ = nullptr; // same COM-thread ownership
     UINT_PTR context_ = 0;
 
     void Start() {
@@ -136,15 +155,22 @@ class Credential final : public ICredentialProviderCredential2 {
         if (!providerEvents_ || FAILED(CoMarshalInterThreadInterfaceInStream(__uuidof(ICredentialProviderEvents), providerEvents_, &marshaled))) {
             state_ = State::Failed; return;
         }
+        IStream* fieldStream = nullptr;
+        if (credentialEvents_ && FAILED(CoMarshalInterThreadInterfaceInStream(__uuidof(ICredentialProviderCredentialEvents), credentialEvents_, &fieldStream))) {
+            marshaled->Release(); state_ = State::Failed; return;
+        }
         AddRef();
         auto context = context_;
         try {
-            std::thread([this, generation, marshaled, context, cancel]() {
+            std::thread([this, generation, marshaled, fieldStream, context, cancel]() {
                 HRESULT initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
                 ICredentialProviderEvents* events = nullptr;
                 HRESULT unmarshal = CoGetInterfaceAndReleaseStream(marshaled, __uuidof(ICredentialProviderEvents), reinterpret_cast<void**>(&events));
+                ICredentialProviderCredentialEvents* fields = nullptr;
+                if (fieldStream) CoGetInterfaceAndReleaseStream(fieldStream, __uuidof(ICredentialProviderCredentialEvents), reinterpret_cast<void**>(&fields));
                 Secret answer;
                 bool success = false;
+                Trace(L"ProviderAcquireStarted");
                 try { success = SUCCEEDED(unmarshal) && AskService(sid_, 2, cancel->value, answer); }
                 catch (...) { success = false; }
                 bool notify = false;
@@ -158,30 +184,38 @@ class Credential final : public ICredentialProviderCredential2 {
                         notify = true;
                     }
                 }
-                if (notify && events) events->CredentialsChanged(context);
+                if (notify) {
+                    Trace(success ? L"ProviderProofReady" : L"ProviderProofFailed");
+                    if (success && events) Trace(L"ProviderRefreshRequested", events->CredentialsChanged(context));
+                    else if (fields) fields->SetFieldString(this, 2, L"认证未完成。请只连接一把已绑定钥匙并重试，或选择其他登录方式。");
+                }
                 // An unconsumed credential expires even if LogonUI never requests serialization.
                 if (success && WaitForSingleObject(cancel->value, 15000) == WAIT_TIMEOUT) {
                     std::lock_guard lock(mutex_);
                     if (generation_ == generation && state_ == State::Ready) { password_.clear(); state_ = State::Failed; }
                 }
                 if (events) events->Release();
+                if (fields) fields->Release();
                 if (SUCCEEDED(initialized)) CoUninitialize();
                 Release();
             }).detach();
         }
-        catch (...) { marshaled->Release(); state_ = State::Failed; Release(); }
+        catch (...) { marshaled->Release(); if (fieldStream) fieldStream->Release(); state_ = State::Failed; Release(); }
     }
 
 public:
     Credential(std::wstring sid, std::wstring user) : sid_(std::move(sid)), user_(std::move(user)) { ++Objects; }
-    ~Credential() { if (providerEvents_) providerEvents_->Release(); --Objects; }
+    ~Credential() { if (providerEvents_) providerEvents_->Release(); if (credentialEvents_) credentialEvents_->Release(); --Objects; }
     void SetProviderEvents(ICredentialProviderEvents* events, UINT_PTR context) {
         if (providerEvents_) providerEvents_->Release();
         providerEvents_ = events;
         if (providerEvents_) providerEvents_->AddRef();
         context_ = context;
     }
-    bool Ready() const { return selected_ && state_ == State::Ready; }
+    bool Ready() {
+        std::lock_guard lock(mutex_);
+        return selected_ && state_ == State::Ready && !password_.bytes.empty() && GetTickCount64() <= readyUntil_;
+    }
     bool IsAccount(PCWSTR sid, PCWSTR user) const { return sid_ == sid && user_ == user; }
     void Stop() {
         std::lock_guard lock(mutex_);
@@ -201,17 +235,31 @@ public:
     }
     IFACEMETHODIMP_(ULONG) AddRef() override { return ++refs_; }
     IFACEMETHODIMP_(ULONG) Release() override { auto n = --refs_; if (!n) delete this; return n; }
-    IFACEMETHODIMP Advise(ICredentialProviderCredentialEvents*) override { return S_OK; }
-    IFACEMETHODIMP UnAdvise() override { Stop(); return S_OK; }
+    IFACEMETHODIMP Advise(ICredentialProviderCredentialEvents* events) override {
+        if (credentialEvents_) credentialEvents_->Release();
+        credentialEvents_ = events;
+        if (credentialEvents_) credentialEvents_->AddRef();
+        return S_OK;
+    }
+    IFACEMETHODIMP UnAdvise() override {
+        Trace(L"ProviderCredentialUnadvised");
+        Stop();
+        if (credentialEvents_) { credentialEvents_->Release(); credentialEvents_ = nullptr; }
+        return S_OK;
+    }
     IFACEMETHODIMP SetSelected(BOOL* automatic) override {
         if (!automatic) return E_POINTER;
         *automatic = FALSE;
-        // One attempt per credential object. Re-enumeration/reselect never reuses a pending proof.
         selected_ = true;
+        // A successful proof survives re-enumeration of this same selected credential.
+        // Explicit deselection/UnAdvise still cancels and wipes it in Stop().
+        *automatic = Ready() ? TRUE : FALSE;
+        Trace(*automatic ? L"ProviderSelectedReady" : L"ProviderSelected");
+        if (*automatic) return S_OK;
         try { Start(); } catch (...) { state_ = State::Failed; return E_OUTOFMEMORY; }
         return S_OK;
     }
-    IFACEMETHODIMP SetDeselected() override { Stop(); return S_OK; }
+    IFACEMETHODIMP SetDeselected() override { Trace(L"ProviderDeselected"); Stop(); return S_OK; }
     IFACEMETHODIMP GetFieldState(DWORD id, CREDENTIAL_PROVIDER_FIELD_STATE* state, CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE* interactive) override {
         if (!state || !interactive) return E_POINTER;
         if (id > 3) return E_INVALIDARG;
@@ -267,6 +315,7 @@ public:
         if (!response || !serialization || !text || !icon) return E_POINTER;
         *response = CPGSR_NO_CREDENTIAL_NOT_FINISHED; *serialization = {}; *text = nullptr; *icon = CPSI_NONE;
         std::unique_lock lock(mutex_);
+        Trace(L"ProviderSerializationRequested");
         if (!selected_) return S_OK;
         if (state_ != State::Ready) {
             // Explicit submit retries only after the previous worker has completed.
@@ -305,16 +354,18 @@ public:
                         serialization->rgbSerialization = buffer;
                         buffer = nullptr;
                         *response = CPGSR_RETURN_CREDENTIAL_FINISHED;
+                        Trace(L"ProviderCredentialSerialized");
                     }
                 }
                 if (buffer) { SecureZeroMemory(buffer, length); CoTaskMemFree(buffer); }
             }
         }
         password_.clear(); state_ = State::Failed;
-        if (FAILED(result)) { *icon = CPSI_ERROR; CopyString(L"无法提交凭据，请使用其他 Windows 登录方式。", text); }
+        if (FAILED(result)) { Trace(L"ProviderSerializationFailed", result); *icon = CPSI_ERROR; CopyString(L"无法提交凭据，请使用其他 Windows 登录方式。", text); }
         return result;
     }
-    IFACEMETHODIMP ReportResult(NTSTATUS status, NTSTATUS, PWSTR* text, CREDENTIAL_PROVIDER_STATUS_ICON* icon) override {
+    IFACEMETHODIMP ReportResult(NTSTATUS status, NTSTATUS substatus, PWSTR* text, CREDENTIAL_PROVIDER_STATUS_ICON* icon) override {
+        Trace(L"ProviderWindowsResult", static_cast<HRESULT>(status), static_cast<DWORD>(substatus));
         if (!text || !icon) return E_POINTER;
         *text = nullptr; *icon = CPSI_NONE;
         { std::lock_guard lock(mutex_); password_.clear(); state_ = State::Failed; }
@@ -382,7 +433,7 @@ public:
         if (!count || !defaultIndex || !automatic) return E_POINTER;
         *count = supported_ ? static_cast<DWORD>(credentials_.size()) : 0;
         *defaultIndex = CREDENTIAL_PROVIDER_NO_DEFAULT; *automatic = FALSE;
-        for (DWORD i = 0; i < *count; ++i) if (credentials_[i]->Ready()) { *defaultIndex = i; *automatic = TRUE; break; }
+        for (DWORD i = 0; i < *count; ++i) if (credentials_[i]->Ready()) { *defaultIndex = i; *automatic = TRUE; Trace(L"ProviderAutoLogonReady"); break; }
         return S_OK;
     }
     IFACEMETHODIMP GetCredentialAt(DWORD index, ICredentialProviderCredential** result) override {
@@ -406,13 +457,14 @@ public:
             user->GetStringValue(PKEY_Identity_QualifiedUserName, &qualified);
             try {
                 Secret unused;
-                if (sid && qualified && _wcsnicmp(qualified, L"MicrosoftAccount\\", 17) == 0 && AskService(sid, 1, cancel.value, unused)) {
-                    Credential* credential = nullptr;
-                    // CredentialsChanged may cause another SetUserArray call. Preserve the completed
-                    // proof for the same account instead of wiping it during this re-enumeration.
-                    for (auto& previous : credentials_) if (previous && previous->IsAccount(sid, qualified)) {
-                        credential = previous; previous = nullptr; break;
-                    }
+                Credential** previous = nullptr;
+                if (sid && qualified) for (auto& item : credentials_) if (item && item->IsAccount(sid, qualified)) { previous = &item; break; }
+                // Reuse an enumerated account without a second query racing the completed reply.
+                // Every new Acquire still checks enabled/revoked state in the service.
+                if (sid && qualified && _wcsnicmp(qualified, L"MicrosoftAccount\\", 17) == 0
+                    && (previous || AskService(sid, 1, cancel.value, unused))) {
+                    Credential* credential = previous ? *previous : nullptr;
+                    if (previous) { *previous = nullptr; Trace(L"ProviderCredentialReused"); }
                     if (!credential) credential = new Credential(sid, qualified);
                     credential->SetProviderEvents(events_, context_);
                     next.push_back(credential); // capacity reserved above; no allocation here

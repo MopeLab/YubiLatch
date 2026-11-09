@@ -6,6 +6,7 @@ internal enum ServiceStage
 {
     ManagementRequestReceived, VaultReadStarted, VaultReadCompleted,
     DeviceListStarted, DeviceListCompleted,
+    LogonAcquireStarted, LogonTouchStarted, LogonProofVerified, LogonProofFailed, LogonResponseSent,
     PasswordValidationStarted, PasswordValidationCompleted, EmptySlotConfirmed,
     PendingBindingSaved, KeyProgrammingStarted, KeyProgrammingCompleted,
     TouchVerificationStarted, TouchVerificationCompleted, BindingActivated,

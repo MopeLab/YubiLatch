@@ -28,6 +28,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Native configure failed' }
     & cmake --build build/native --config $Configuration
     if ($LASTEXITCODE -ne 0) { throw 'Native build failed' }
+    & ctest --test-dir build/native -C $Configuration --output-on-failure
+    if ($LASTEXITCODE -ne 0) { throw 'Isolated pipe connection tests failed' }
     & dotnet test tests/YubiLatch.Core.Tests/YubiLatch.Core.Tests.csproj -c $Configuration --no-restore --logger 'trx;LogFileName=core.trx'
     if ($LASTEXITCODE -ne 0) { throw 'Core security tests failed' }
     & dotnet test tests/YubiLatch.Service.Tests/YubiLatch.Service.Tests.csproj -c $Configuration --no-restore --logger 'trx;LogFileName=management-ipc.trx'

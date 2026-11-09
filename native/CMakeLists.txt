@@ -10,3 +10,12 @@ target_compile_options(YubiLatch.CredentialProvider PRIVATE /W4 /WX /sdl /guard:
 target_link_options(YubiLatch.CredentialProvider PRIVATE /DYNAMICBASE /NXCOMPAT /guard:cf /CETCOMPAT)
 set_property(TARGET YubiLatch.CredentialProvider PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_link_libraries(YubiLatch.CredentialProvider PRIVATE credui secur32 advapi32 shlwapi ole32 user32 gdi32)
+
+# Standalone transport tests use private fixture pipes; they never load/register the provider.
+enable_testing()
+add_executable(YubiLatch.PipeConnection.Tests tests/PipeConnectionTests.cpp)
+target_compile_features(YubiLatch.PipeConnection.Tests PRIVATE cxx_std_20)
+target_compile_definitions(YubiLatch.PipeConnection.Tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(YubiLatch.PipeConnection.Tests PRIVATE /W4 /WX /sdl /utf-8 /EHsc)
+add_test(NAME pipe-connection COMMAND YubiLatch.PipeConnection.Tests)
+set_tests_properties(pipe-connection PROPERTIES TIMEOUT 15)

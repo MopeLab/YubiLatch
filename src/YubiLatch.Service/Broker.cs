@@ -266,6 +266,7 @@ internal sealed class Broker(Vault vault, Hardware hardware, ILogger<Broker> log
             if (account == null || !account.Enabled || !account.Keys.Any(k => k.State == BindingState.Active))
             { await ReplyLogon(pipe, Wire.Unavailable, ReadOnlyMemory<byte>.Empty, ct); return; }
             if (operation == Wire.Query) { await ReplyLogon(pipe, Wire.Ready, ReadOnlyMemory<byte>.Empty, ct); return; }
+            ServiceDiagnostics.Record(ServiceStage.LogonAcquireStarted);
             var until = DateTimeOffset.UtcNow.AddSeconds(55);
             while (DateTimeOffset.UtcNow < until)
             {
@@ -277,11 +278,17 @@ internal sealed class Broker(Vault vault, Hardware hardware, ILogger<Broker> log
                 if (candidates.Length == 1)
                 {
                     bool verified;
+                    ServiceDiagnostics.Record(ServiceStage.LogonTouchStarted);
                     try { verified = hardware.Prove(candidates[0]); }
-                    catch (Exception ex) when (ex is not OutOfMemoryException) { verified = false; }
+                    catch (Exception ex) when (ex is not OutOfMemoryException) {
+                        ServiceDiagnostics.Record(ServiceStage.LogonProofFailed, ex);
+                        verified = false;
+                    }
                     ct.ThrowIfCancellationRequested();
+                    ServiceDiagnostics.Record(verified ? ServiceStage.LogonProofVerified : ServiceStage.LogonProofFailed);
                     await ReplyLogon(pipe, verified ? Wire.Ready : Wire.Failed,
                         verified ? account.PasswordUtf16 : ReadOnlyMemory<byte>.Empty, ct);
+                    if (verified) ServiceDiagnostics.Record(ServiceStage.LogonResponseSent);
                     return;
                 }
                 await Task.Delay(500, ct);
