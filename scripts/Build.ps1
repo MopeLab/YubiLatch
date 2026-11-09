@@ -35,7 +35,8 @@ try {
     & (Join-Path $PSScriptRoot 'Verify-Scripts.ps1')
     if ($Package) {
         $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-        $output = Join-Path $root "artifacts/YubiLatch-0.1.0-preview-win-x64-$stamp"
+        $packageName = "YubiLatch-0.1.0-preview-win-x64-$stamp"
+        $output = Join-Path $root "artifacts/$packageName"
         New-Item -ItemType Directory -Path $output | Out-Null
         & dotnet publish src/YubiLatch.Service/YubiLatch.Service.csproj -c $Configuration -r win-x64 --self-contained true -p:PublishTrimmed=false -o (Join-Path $output 'service')
         if ($LASTEXITCODE -ne 0) { throw 'Service publish failed' }
@@ -71,9 +72,10 @@ try {
         & (Join-Path $PSScriptRoot 'New-Manifest.ps1') -PackageRoot $output
         & (Join-Path $PSScriptRoot 'Verify-Package.ps1') -PackageRoot $output
         & (Join-Path $PSScriptRoot 'Test-GuiStartup.ps1') -AppDirectory (Join-Path $output 'app')
-        $archive = $output + '.zip'
-        Compress-Archive -LiteralPath $output -DestinationPath $archive
-        Get-FileHash -LiteralPath $archive -Algorithm SHA256 | Format-List
+        if ($env:GITHUB_OUTPUT) {
+            "package_name=$packageName" | Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
+            "package_path=$output" | Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
+        }
         Write-Output "Package: $output"
     }
 } finally { Pop-Location }

@@ -25,7 +25,7 @@ cd YubiLatch
 pwsh -NoProfile -File .\scripts\Build.ps1 -Package -LockedRestore
 ```
 
-构建会编译组件、运行核心安全测试、检查安装脚本语法，生成 `artifacts/YubiLatch-0.1.0-preview-win-x64-时间戳.zip` 和同名目录。测试宿主需要本机进程通信权限。
+构建会编译组件、运行核心安全测试、检查安装脚本语法，生成 `artifacts/YubiLatch-0.1.0-preview-win-x64-时间戳/` 发布目录。CI 直接上传此目录，下载文件名为 `YubiLatch-0.1.0-preview-win-x64-时间戳.zip`。测试宿主需要本机进程通信权限。
 
 VS 解决方案为 `YubiLatch.slnx`；原生 DLL 使用 `native/CMakeLists.txt` 构建。Windows App SDK 与 .NET 运行时随发布目录部署，目标机不要求预装 .NET。原生 DLL 静态链接 VC 运行库。
 
