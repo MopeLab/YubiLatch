@@ -13,5 +13,11 @@ builder.Services.AddWindowsService(options => options.ServiceName = "YubiLatch")
 builder.Services.AddSingleton<Vault>();
 builder.Services.AddSingleton<Hardware>();
 builder.Services.AddHostedService<Broker>();
-await builder.Build().RunAsync();
-return 0;
+AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+    ServiceDiagnostics.Record(ServiceStage.UnhandledException, e.ExceptionObject as Exception);
+try { await builder.Build().RunAsync(); return 0; }
+catch (Exception ex) when (ex is not OutOfMemoryException)
+{
+    ServiceDiagnostics.Record(ServiceStage.HostFailed, ex);
+    return 1;
+}

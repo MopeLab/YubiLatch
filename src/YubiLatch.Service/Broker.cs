@@ -40,6 +40,7 @@ internal sealed class Broker(Vault vault, Hardware hardware, ILogger<Broker> log
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
+                ServiceDiagnostics.Record(ServiceStage.PipeFailed, ex);
                 // Only error classification; never include request data, exception messages or secrets.
                 logger.LogWarning("Pipe {Kind}: {ErrorType}, HRESULT {ErrorCode:X8}",
                     logon ? "Logon" : "Management", ex.GetType().Name, ex.HResult);
@@ -68,9 +69,16 @@ internal sealed class Broker(Vault vault, Hardware hardware, ILogger<Broker> log
                 finally { _gate.Release(); }
             }
         }
-        catch (UnauthorizedAccessException) { reply = new(false, "AccountVerificationFailed", "账户验证失败。请使用当前 Microsoft 账户密码，而不是 PIN；多次失败后请稍后重试。"); }
+        catch (UnauthorizedAccessException ex)
+        {
+            ServiceDiagnostics.Record(ServiceStage.ManagementFailed, ex);
+            reply = new(false, "AccountVerificationFailed", "账户验证失败。请使用当前 Microsoft 账户密码，而不是 PIN；多次失败后请稍后重试。");
+        }
         catch (Exception ex) when (ex is not OutOfMemoryException)
-        { reply = new(false, "OperationFailed", "操作未完成。请检查钥匙、槽位和触摸状态；若已写入槽位，请恢复待验证绑定，不要覆盖槽位。"); }
+        {
+            ServiceDiagnostics.Record(ServiceStage.ManagementFailed, ex);
+            reply = new(false, "OperationFailed", "操作未完成。请检查钥匙、槽位和触摸状态；若已写入槽位，请恢复待验证绑定，不要覆盖槽位。");
+        }
         finally { if (bytes != null) CryptographicOperations.ZeroMemory(bytes); }
         var response = JsonSerializer.SerializeToUtf8Bytes(reply, Wire.Json);
         await PipeReply.WriteManagementAsync(pipe, response, ct);
@@ -93,7 +101,9 @@ internal sealed class Broker(Vault vault, Hardware hardware, ILogger<Broker> log
         using var existing = vault.Load(caller.Sid);
         if (request.Operation == "Status") return new(true, "Ok", "本地服务已连接。", Snapshot(existing));
         var user = existing?.QualifiedUserName ?? request.UserName;
+        if (request.Operation == "Enroll") ServiceDiagnostics.Record(ServiceStage.PasswordValidationStarted);
         RequirePassword(caller, user, request.Password);
+        if (request.Operation == "Enroll") ServiceDiagnostics.Record(ServiceStage.PasswordValidationCompleted);
         switch (request.Operation)
         {
             case "Enroll":
@@ -104,6 +114,7 @@ internal sealed class Broker(Vault vault, Hardware hardware, ILogger<Broker> log
                 if (existing?.Keys.Any(k => k.Serial == request.Serial) == true || existing?.Keys.Count >= 16)
                     return new(false, "AlreadyBound", "该钥匙已有绑定或已达 16 把上限。待验证绑定请使用恢复验证。");
                 hardware.RequireEmpty(request.Serial);
+                ServiceDiagnostics.Record(ServiceStage.EmptySlotConfirmed);
                 using var created = existing == null ? new AccountRecord
                 {
                     Sid = caller.Sid,
@@ -117,10 +128,16 @@ internal sealed class Broker(Vault vault, Hardware hardware, ILogger<Broker> log
                 account.Keys.Add(binding);
                 // Persist first so interruption can be recovered without rewriting the hardware slot.
                 vault.Save(account);
+                ServiceDiagnostics.Record(ServiceStage.PendingBindingSaved);
+                ServiceDiagnostics.Record(ServiceStage.KeyProgrammingStarted);
                 hardware.Provision(binding);
+                ServiceDiagnostics.Record(ServiceStage.KeyProgrammingCompleted);
+                ServiceDiagnostics.Record(ServiceStage.TouchVerificationStarted);
                 if (!hardware.Prove(binding)) throw new CryptographicException();
+                ServiceDiagnostics.Record(ServiceStage.TouchVerificationCompleted);
                 binding.State = BindingState.Active;
                 vault.Save(account);
+                ServiceDiagnostics.Record(ServiceStage.BindingActivated);
                 return new(true, "Ok", "绑定完成。硬件挑战响应及触摸验证已通过。", Snapshot(account), SlotManagementCode: Convert.ToHexString(binding.AccessCode));
             }
             case "ResumePending":
