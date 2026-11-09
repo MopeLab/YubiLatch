@@ -33,6 +33,7 @@ try {
     & dotnet test tests/YubiLatch.Service.Tests/YubiLatch.Service.Tests.csproj -c $Configuration --no-restore --logger 'trx;LogFileName=management-ipc.trx'
     if ($LASTEXITCODE -ne 0) { throw 'Management IPC tests failed' }
     & (Join-Path $PSScriptRoot 'Verify-Scripts.ps1')
+    & (Join-Path $PSScriptRoot 'Test-InstallerServiceState.ps1')
     if ($Package) {
         $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
         $packageName = "YubiLatch-0.1.0-preview-win-x64-$stamp"

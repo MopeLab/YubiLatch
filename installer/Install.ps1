@@ -29,7 +29,7 @@ if (-not $AllowUnsignedDevelopmentBuild) {
         if ($signature.Status -ne 'Valid') { throw "所有发布 EXE/DLL 必须有有效 Authenticode 签名（包括托管程序集和原生依赖）: $($entry.Path)。源码开发包需显式使用 -AllowUnsignedDevelopmentBuild。" }
     }
 }
-if (Get-Service -Name YubiLatch -ErrorAction SilentlyContinue) { throw '已存在 YubiLatch 服务。请先卸载旧版本（默认保留绑定），不要覆盖运行中的登录 DLL。' }
+Assert-ServiceInstallable
 if (Test-Path -LiteralPath $script:InstallRoot) { throw '安装目录已存在，请先处理旧安装；本安装器不会覆盖现有文件。' }
 Assert-NoReparse $script:InstallRoot
 Assert-NoReparse $script:VaultRoot
@@ -61,7 +61,9 @@ try {
     Invoke-Sc @('sdset','YubiLatch','D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;BU)')
     Invoke-Sc @('failure','YubiLatch','reset=','86400','actions=','restart/5000/restart/15000/none/0')
     Start-Service -Name YubiLatch
-    (Get-Service -Name YubiLatch).WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
+    $controller = [ServiceProcess.ServiceController]::new('YubiLatch')
+    try { $controller.WaitForStatus('Running', [TimeSpan]::FromSeconds(20)) }
+    finally { $controller.Dispose() }
     $uninstallKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\YubiLatch'
     New-Item -Path $uninstallKey -Force | Out-Null
     New-ItemProperty -LiteralPath $uninstallKey -Name DisplayName -Value 'YubiLatch' -PropertyType String -Force | Out-Null

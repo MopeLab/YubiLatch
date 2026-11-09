@@ -49,6 +49,12 @@ reg unload HKLM\YubiLatchOffline
 
 只删除这两个精确子键。不存在则不需要删除父分支，不能改动 Password、PIN、Hello Provider。重启后使用系统方式登录，再卸载服务。
 
+## 卸载提示 1072 / 服务正在等待删除
+
+关闭“服务”管理器、YubiLatch 属性窗口及相关管理终端，等待服务句柄释放，再重新安装。若仍处于待删除状态，重启 Windows 后重试。
+
+卸载器接受服务已删除或已标记删除的状态，并继续清理旧文件。安装器会等待待删除服务释放，超时后提示上述处理步骤。卸载默认保留加密绑定数据。
+
 ## 数据和权限损坏
 
 数据位于 `%ProgramData%\MopeLab\YubiLatch`，使用 LocalSystem 用户级 DPAPI 加密并绑定 SID。目录仅允许 SYSTEM 和管理员访问，数据依赖原 Windows 安装的 DPAPI 主密钥。

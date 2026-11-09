@@ -90,9 +90,95 @@ function Remove-ProviderRegistration {
     }
 }
 
-function Invoke-Sc([string[]]$ScArguments) {
-    & "$env:SystemRoot\System32\sc.exe" @ScArguments
-    if ($LASTEXITCODE -ne 0) { throw "Service Control 命令失败 ($LASTEXITCODE)。" }
+function Invoke-Sc([string[]]$ScArguments, [int[]]$SuccessCodes = @(0)) {
+    $output = & "$env:SystemRoot\System32\sc.exe" @ScArguments
+    $code = $LASTEXITCODE
+    if ($code -notin $SuccessCodes) { $output | Out-Host; throw "Service Control 命令失败 ($code)。" }
+    if ($code -eq 0) { $output }
+}
+
+function Get-ServiceRegistrationState {
+    if (-not ('YubiLatch.Installer.ServiceProbe' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+namespace YubiLatch.Installer {
+    public static class ServiceProbe {
+        [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        static extern IntPtr OpenSCManager(string machine, string database, uint access);
+        [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        static extern IntPtr OpenService(IntPtr manager, string name, uint access);
+        [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        [return:MarshalAs(UnmanagedType.Bool)]
+        static extern bool QueryServiceConfig(IntPtr service, IntPtr buffer, uint size, out uint needed);
+        [DllImport("advapi32.dll")]
+        static extern bool CloseServiceHandle(IntPtr handle);
+        public static string Read() {
+            var manager = OpenSCManager(null, null, 1);
+            if (manager == IntPtr.Zero) throw new Win32Exception();
+            try {
+                var service = OpenService(manager, "YubiLatch", 5);
+                if (service == IntPtr.Zero) {
+                    int error = Marshal.GetLastWin32Error();
+                    if (error == 1060) return "Missing";
+                    if (error == 1072) return "DeletePending";
+                    throw new Win32Exception(error);
+                }
+                try {
+                    uint needed;
+                    QueryServiceConfig(service, IntPtr.Zero, 0, out needed);
+                    int error = Marshal.GetLastWin32Error();
+                    if (error == 2 || error == 1072) return "DeletePending";
+                    if (error != 122) throw new Win32Exception(error);
+                    using (var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\YubiLatch")) {
+                        if (key != null && Convert.ToInt32(key.GetValue("DeleteFlag", 0)) == 1) return "DeletePending";
+                    }
+                    return "Present";
+                } finally { CloseServiceHandle(service); }
+            } finally { CloseServiceHandle(manager); }
+        }
+    }
+}
+'@
+    }
+    return [YubiLatch.Installer.ServiceProbe]::Read()
+}
+
+function Wait-ServiceRegistrationRemoved([int]$TimeoutSeconds = 20) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        if ((Get-ServiceRegistrationState) -eq 'Missing') { return $true }
+        if ([DateTime]::UtcNow -ge $deadline) { return $false }
+        Start-Sleep -Milliseconds 250
+    } while ($true)
+}
+
+function Assert-ServiceInstallable {
+    $state = Get-ServiceRegistrationState
+    if ($state -eq 'Present') { throw '已安装 YubiLatch，请先运行 Uninstall.ps1 卸载旧版本。' }
+    if ($state -eq 'DeletePending' -and -not (Wait-ServiceRegistrationRemoved)) {
+        throw 'YubiLatch 服务正在等待删除。请关闭服务管理器、服务属性窗口及相关管理终端后重试；若仍未释放，请重启 Windows。'
+    }
+}
+
+function Remove-YubiLatchService {
+    $state = Get-ServiceRegistrationState
+    if ($state -eq 'Missing') { return $true }
+    if ($state -eq 'Present') {
+        $controller = [ServiceProcess.ServiceController]::new('YubiLatch')
+        try {
+            if ($controller.Status -ne 'Stopped') {
+                $controller.Stop()
+                $controller.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
+            }
+        } catch {
+            if ((Get-ServiceRegistrationState) -eq 'Present') { throw }
+        } finally { $controller.Dispose() }
+    }
+    # Repeating delete is successful when already missing or marked for deletion.
+    Invoke-Sc -ScArguments @('delete','YubiLatch') -SuccessCodes @(0,1060,1072) | Out-Host
+    return (Wait-ServiceRegistrationRemoved)
 }
 
 function Get-OwnAccountStatus {
