@@ -10,6 +10,26 @@ namespace YubiLatch.Service.Tests;
 public sealed class ManagementPipeTests
 {
     [Fact]
+    public async Task ReplyIsNotDisconnectedBeforeClientConsumesBody()
+    {
+        var name = "YubiLatch.Tests." + Guid.NewGuid().ToString("N");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var server = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        var accept = server.WaitForConnectionAsync(timeout.Token);
+        using var client = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
+        await client.ConnectAsync(timeout.Token);
+        await accept;
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32000);
+        var send = PipeReply.WriteManagementAsync(server, bytes, timeout.Token);
+        Assert.False(send.IsCompleted);
+        Assert.Equal(bytes, await Wire.ReadFrameAsync(client, timeout.Token));
+        Assert.False(send.IsCompleted);
+        client.Dispose();
+        await send;
+        server.Disconnect();
+    }
+
+    [Fact]
     public async Task NewConnectionsReadRequestBeforeInspectingClientIdentity()
     {
         var name = "YubiLatch.Tests." + Guid.NewGuid().ToString("N");

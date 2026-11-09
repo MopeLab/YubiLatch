@@ -9,7 +9,7 @@ using YubiLatch.Core;
 
 namespace YubiLatch.Service;
 
-internal sealed class Broker(Vault vault, Hardware hardware) : BackgroundService
+internal sealed class Broker(Vault vault, Hardware hardware, ILogger<Broker> logger) : BackgroundService
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Dictionary<string, Queue<DateTimeOffset>> _passwordAttempts = [];
@@ -38,7 +38,12 @@ internal sealed class Broker(Vault vault, Hardware hardware) : BackgroundService
                 else await Manage(pipe, deadline.Token);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-            catch (Exception ex) when (ex is not OutOfMemoryException) { /* Fail closed. No sensitive exception logging. */ }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                // Only error classification; never include request data, exception messages or secrets.
+                logger.LogWarning("Pipe {Kind}: {ErrorType}, HRESULT {ErrorCode:X8}",
+                    logon ? "Logon" : "Management", ex.GetType().Name, ex.HResult);
+            }
             finally { if (pipe.IsConnected) pipe.Disconnect(); }
         }
     }
@@ -68,7 +73,7 @@ internal sealed class Broker(Vault vault, Hardware hardware) : BackgroundService
         { reply = new(false, "OperationFailed", "操作未完成。请检查钥匙、槽位和触摸状态；若已写入槽位，请恢复待验证绑定，不要覆盖槽位。"); }
         finally { if (bytes != null) CryptographicOperations.ZeroMemory(bytes); }
         var response = JsonSerializer.SerializeToUtf8Bytes(reply, Wire.Json);
-        await Wire.WriteFrameAsync(pipe, response, ct);
+        await PipeReply.WriteManagementAsync(pipe, response, ct);
     }
 
     private void RequirePassword(Caller caller, string user, string password)
@@ -192,7 +197,12 @@ internal sealed class Broker(Vault vault, Hardware hardware) : BackgroundService
         _ = new SecurityIdentifier(sid);
         using var connection = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var disconnect = WatchDisconnect(pipe, connection);
-        try { await ServeLogon(pipe, operation, sid, connection.Token); }
+        try
+        {
+            await ServeLogon(pipe, operation, sid, connection.Token);
+            try { await disconnect.WaitAsync(TimeSpan.FromSeconds(3), ct); }
+            catch (TimeoutException) { }
+        }
         finally { connection.Cancel(); await disconnect; }
     }
 
