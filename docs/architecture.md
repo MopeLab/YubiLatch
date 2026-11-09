@@ -32,7 +32,7 @@ Windows 账户验证由独立 LocalSystem 子进程执行。服务通过继承�
 
 ## 认证与绑定
 
-登录磁贴在同一账户重新枚举时复用现有凭据对象；就绪状态在 `GetCredentialCount` 和 `SetSelected` 中一致请求自动提交。管道连接在短暂占用时按截止时间重试，并响应取消。失败提示通过磁贴字段回调更新，成功后才通知自动提交。
+登录磁贴在同一账户重新枚举时复用现有凭据对象；就绪状态在 `GetCredentialCount` 和 `SetSelected` 中一致请求自动提交。`UnAdvise` 只释放界面回调；取消选择、对象销毁、提交或 15 秒过期时清除凭据。管道连接在短暂占用时按截止时间重试，并响应取消。失败提示通过磁贴字段回调更新，成功后才通知自动提交。
 
 - 使用 Yubico 官方 [.NET SDK](https://docs.yubico.com/yesdk/users-manual/application-otp/challenge-response.html)。只编程未配置的 OTP 长按槽位 2，20 字节随机秘钥，强制 `UseButton()`，并设置随机 6 字节槽位管理码防止任意软件更新触摸策略。不重置设备，不触碰 FIDO2、PIV、OpenPGP 或短按槽位。已有长按槽位一律拒绝覆盖。管理码可在账户重新认证后单独查看，删除绑定前应备份；不会导出 HMAC 秘钥。
 - 每次操作产生 64 字节 CSPRNG 挑战，按照硬件 OTP 协议使用完整 20 字节 HMAC-SHA1 响应，以固定时间比较验证。

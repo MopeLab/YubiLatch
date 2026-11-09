@@ -243,7 +243,8 @@ public:
     }
     IFACEMETHODIMP UnAdvise() override {
         Trace(L"ProviderCredentialUnadvised");
-        Stop();
+        // LogonUI also releases field callbacks while rebuilding the same credential.
+        // Selection, proof lifetime and callback lifetime are independent.
         if (credentialEvents_) { credentialEvents_->Release(); credentialEvents_ = nullptr; }
         return S_OK;
     }
@@ -252,7 +253,7 @@ public:
         *automatic = FALSE;
         selected_ = true;
         // A successful proof survives re-enumeration of this same selected credential.
-        // Explicit deselection/UnAdvise still cancels and wipes it in Stop().
+        // Explicit deselection still cancels and wipes it in Stop().
         *automatic = Ready() ? TRUE : FALSE;
         Trace(*automatic ? L"ProviderSelectedReady" : L"ProviderSelected");
         if (*automatic) return S_OK;
@@ -410,7 +411,8 @@ public:
         return S_OK;
     }
     IFACEMETHODIMP UnAdvise() override {
-        for (auto item : credentials_) { item->Stop(); item->SetProviderEvents(nullptr, 0); }
+        Trace(L"ProviderUnadvised");
+        for (auto item : credentials_) item->SetProviderEvents(nullptr, 0);
         if (events_) { events_->Release(); events_ = nullptr; }
         return S_OK;
     }
@@ -443,6 +445,7 @@ public:
         return credentials_[index]->QueryInterface(IID_PPV_ARGS(result));
     }
     IFACEMETHODIMP SetUserArray(ICredentialProviderUserArray* users) override {
+        Trace(L"ProviderUserArrayReceived");
         if (!supported_ || !users) { Clear(); return S_OK; }
         DWORD count = 0;
         if (FAILED(users->GetCount(&count)) || count > 64) { Clear(); return S_OK; }
