@@ -7,6 +7,10 @@ namespace YubiLatch.Service;
 
 internal sealed class Hardware
 {
+    private readonly Func<int, IOtpChallengeSession> _openChallenge;
+    public Hardware() : this(serial => new OtpChallengeSession(Find(serial))) { }
+    internal Hardware(Func<int, IOtpChallengeSession> openChallenge) => _openChallenge = openChallenge;
+
     private static IYubiKeyDevice Find(int serial) => YubiKeyDevice.FindAll()
         .SingleOrDefault(d => d.SerialNumber == serial) ?? throw new IOException("Key unavailable.");
 
@@ -43,16 +47,17 @@ internal sealed class Hardware
 
     public bool Prove(KeyBinding binding)
     {
-        using var otp = new OtpSession(Find(binding.Serial));
-        if (!otp.IsLongPressConfigured || !otp.LongPressRequiresTouch) return false;
+        using var otp = _openChallenge(binding.Serial);
+        // LongPressRequiresTouch reports keyboard-triggered OTP, not HMAC user presence.
+        // HMAC touch is enforced by UseButton() at provisioning and protected by the access code.
+        if (!otp.IsConfigured) return false;
         using var proof = new ChallengeProof();
         var challenge = proof.CopyChallenge();
         byte[]? response = null;
         try
         {
             // The SDK performs an actual USB HID HMAC transaction; the key enforces physical touch.
-            response = otp.CalculateChallengeResponse(Slot.LongPress).UseChallenge(challenge)
-                .UseYubiOtp(false).UseTouchNotifier(() => { }).GetDataBytes().ToArray();
+            response = otp.Calculate(challenge);
             return proof.Verify(binding.Secret, response);
         }
         finally
@@ -61,4 +66,21 @@ internal sealed class Hardware
             if (response != null) CryptographicOperations.ZeroMemory(response);
         }
     }
+}
+
+internal interface IOtpChallengeSession : IDisposable
+{
+    bool IsConfigured { get; }
+    bool KeyboardTouchTriggered { get; }
+    byte[] Calculate(byte[] challenge);
+}
+
+internal sealed class OtpChallengeSession(IYubiKeyDevice device) : IOtpChallengeSession
+{
+    private readonly OtpSession _session = new(device);
+    public bool IsConfigured => _session.IsLongPressConfigured;
+    public bool KeyboardTouchTriggered => _session.LongPressRequiresTouch;
+    public byte[] Calculate(byte[] challenge) => _session.CalculateChallengeResponse(Slot.LongPress)
+        .UseChallenge(challenge).UseYubiOtp(false).UseTouchNotifier(() => { }).GetDataBytes().ToArray();
+    public void Dispose() => _session.Dispose();
 }

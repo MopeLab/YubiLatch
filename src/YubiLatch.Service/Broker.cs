@@ -101,9 +101,10 @@ internal sealed class Broker(Vault vault, Hardware hardware, ILogger<Broker> log
         using var existing = vault.Load(caller.Sid);
         if (request.Operation == "Status") return new(true, "Ok", "本地服务已连接。", Snapshot(existing));
         var user = existing?.QualifiedUserName ?? request.UserName;
-        if (request.Operation == "Enroll") ServiceDiagnostics.Record(ServiceStage.PasswordValidationStarted);
+        var traceBinding = request.Operation is "Enroll" or "ResumePending";
+        if (traceBinding) ServiceDiagnostics.Record(ServiceStage.PasswordValidationStarted);
         RequirePassword(caller, user, request.Password);
-        if (request.Operation == "Enroll") ServiceDiagnostics.Record(ServiceStage.PasswordValidationCompleted);
+        if (traceBinding) ServiceDiagnostics.Record(ServiceStage.PasswordValidationCompleted);
         switch (request.Operation)
         {
             case "Enroll":
@@ -144,9 +145,12 @@ internal sealed class Broker(Vault vault, Hardware hardware, ILogger<Broker> log
             {
                 var account = existing ?? throw new InvalidDataException();
                 var key = account.Keys.Single(k => k.Id == request.KeyId && k.State == BindingState.Pending);
+                ServiceDiagnostics.Record(ServiceStage.TouchVerificationStarted);
                 if (!hardware.Prove(key)) throw new CryptographicException();
+                ServiceDiagnostics.Record(ServiceStage.TouchVerificationCompleted);
                 key.State = BindingState.Active;
                 vault.Save(account);
+                ServiceDiagnostics.Record(ServiceStage.BindingActivated);
                 return new(true, "Ok", "待验证绑定已恢复。", Snapshot(account));
             }
             case "RemoveKey":
