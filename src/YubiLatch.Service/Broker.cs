@@ -34,9 +34,8 @@ internal sealed class Broker(Vault vault, Hardware hardware) : BackgroundService
                 await pipe.WaitForConnectionAsync(stoppingToken);
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
                 deadline.CancelAfter(TimeSpan.FromSeconds(75));
-                var caller = WindowsIdentityChecks.Inspect(pipe);
-                if (logon) await Logon(pipe, caller, deadline.Token);
-                else await Manage(pipe, caller, deadline.Token);
+                if (logon) await Logon(pipe, deadline.Token);
+                else await Manage(pipe, deadline.Token);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception ex) when (ex is not OutOfMemoryException) { /* Fail closed. No sensitive exception logging. */ }
@@ -44,7 +43,7 @@ internal sealed class Broker(Vault vault, Hardware hardware) : BackgroundService
         }
     }
 
-    private async Task Manage(NamedPipeServerStream pipe, Caller caller, CancellationToken ct)
+    private async Task Manage(NamedPipeServerStream pipe, CancellationToken ct)
     {
         ManagementReply reply;
         byte[]? bytes = null;
@@ -52,7 +51,8 @@ internal sealed class Broker(Vault vault, Hardware hardware) : BackgroundService
         {
             using var readDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
             readDeadline.CancelAfter(TimeSpan.FromSeconds(5));
-            bytes = await Wire.ReadFrameAsync(pipe, readDeadline.Token);
+            Caller caller;
+            (caller, bytes) = await WindowsIdentityChecks.ReadManagementAsync(pipe, readDeadline.Token);
             var request = JsonSerializer.Deserialize<ManagementRequest>(bytes, Wire.Json) ?? throw new InvalidDataException();
             if (caller.IsSystem || caller.Session <= 0) throw new UnauthorizedAccessException();
             if (!await _gate.WaitAsync(TimeSpan.FromSeconds(2), ct))
@@ -172,12 +172,13 @@ internal sealed class Broker(Vault vault, Hardware hardware) : BackgroundService
         : new(true, account.Enabled, account.QualifiedUserName,
             account.Keys.Select(k => new KeyStatus(k.Id, k.Serial, k.Name, k.State, k.CreatedUtc)).ToArray());
 
-    private async Task Logon(NamedPipeServerStream pipe, Caller caller, CancellationToken ct)
+    private async Task Logon(NamedPipeServerStream pipe, CancellationToken ct)
     {
         using var readDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         readDeadline.CancelAfter(TimeSpan.FromSeconds(3));
         var header = new byte[16];
         await pipe.ReadExactlyAsync(header, readDeadline.Token);
+        var caller = WindowsIdentityChecks.Inspect(pipe);
         if (BinaryPrimitives.ReadUInt32LittleEndian(header) != Wire.Magic) throw new InvalidDataException();
         var operation = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(4));
         var session = BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(8));

@@ -119,6 +119,7 @@ public sealed partial class MainWindow : Window
         try
         {
             var reply = await Request(new() { Operation = "Devices" });
+            if (reply is not { Success: true }) return;
             if (reply?.Devices is { Count: > 0 } devices)
                 DevicesText.Text = string.Join(Environment.NewLine, devices.Select(d => $"{d.Name} · {d.Serial} · {L.T(d.Slot2Occupied ? "OccupiedSlot" : "EmptySlot")}"));
             else DevicesText.Text = L.T("NoDevices");
@@ -138,6 +139,7 @@ public sealed partial class MainWindow : Window
         Busy(true);
         var devices = await Request(new() { Operation = "Devices" });
         Busy(false);
+        if (devices is not { Success: true }) return;
         if (devices?.Devices is not { Count: > 0 }) { Show(L.T("NoDevices"), InfoBarSeverity.Warning); return; }
         var eligible = devices.Devices.Where(d => !d.Slot2Occupied).ToArray();
         if (eligible.Length == 0) { Show(L.T("OccupiedSlot"), InfoBarSeverity.Warning); return; }

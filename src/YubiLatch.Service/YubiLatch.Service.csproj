@@ -6,6 +6,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="YubiLatch.Service.Tests" />
     <ProjectReference Include="../YubiLatch.Core/YubiLatch.Core.csproj" />
     <PackageReference Include="Yubico.YubiKey" Version="1.18.1" />
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.14" />

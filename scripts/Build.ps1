@@ -12,7 +12,7 @@ try {
     if (-not $env:DOTNET_CLI_HOME) { $env:DOTNET_CLI_HOME = Join-Path $root '.buildhome' }
     $restoreArgs = @()
     if ($LockedRestore) { $restoreArgs += '--locked-mode' }
-    foreach ($project in @('src/YubiLatch.Service/YubiLatch.Service.csproj','src/YubiLatch.App/YubiLatch.App.csproj','tests/YubiLatch.Core.Tests/YubiLatch.Core.Tests.csproj')) {
+    foreach ($project in @('src/YubiLatch.Service/YubiLatch.Service.csproj','src/YubiLatch.App/YubiLatch.App.csproj','tests/YubiLatch.Core.Tests/YubiLatch.Core.Tests.csproj','tests/YubiLatch.Service.Tests/YubiLatch.Service.Tests.csproj')) {
         & dotnet restore $project @restoreArgs -p:Platform=x64
         if ($LASTEXITCODE -ne 0) { throw "Restore failed: $project" }
     }
@@ -30,6 +30,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Native build failed' }
     & dotnet test tests/YubiLatch.Core.Tests/YubiLatch.Core.Tests.csproj -c $Configuration --no-restore --logger 'trx;LogFileName=core.trx'
     if ($LASTEXITCODE -ne 0) { throw 'Core security tests failed' }
+    & dotnet test tests/YubiLatch.Service.Tests/YubiLatch.Service.Tests.csproj -c $Configuration --no-restore --logger 'trx;LogFileName=management-ipc.trx'
+    if ($LASTEXITCODE -ne 0) { throw 'Management IPC tests failed' }
     & (Join-Path $PSScriptRoot 'Verify-Scripts.ps1')
     if ($Package) {
         $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'

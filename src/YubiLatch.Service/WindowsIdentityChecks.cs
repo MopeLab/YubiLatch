@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
+using System.Security.Cryptography;
+using YubiLatch.Core;
 using Microsoft.Win32.SafeHandles;
 
 namespace YubiLatch.Service;
@@ -11,6 +13,15 @@ internal sealed record Caller(string Sid, int Session, int ProcessId, bool IsSys
 
 internal static partial class WindowsIdentityChecks
 {
+    public static async Task<(Caller Caller, byte[] Payload)> ReadManagementAsync(NamedPipeServerStream pipe, CancellationToken ct)
+    {
+        // ImpersonateNamedPipeClient uses the security context of the last data read.
+        // Before the first read it fails with ERROR_CANNOT_IMPERSONATE (1368).
+        var payload = await Wire.ReadFrameAsync(pipe, ct);
+        try { return (Inspect(pipe), payload); }
+        catch { CryptographicOperations.ZeroMemory(payload); throw; }
+    }
+
     [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool GetNamedPipeClientProcessId(SafePipeHandle pipe, out uint pid);
