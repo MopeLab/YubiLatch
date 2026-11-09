@@ -61,13 +61,24 @@ internal sealed class Broker(Vault vault, Hardware hardware, ILogger<Broker> log
             (caller, bytes) = await WindowsIdentityChecks.ReadManagementAsync(pipe, readDeadline.Token);
             var request = JsonSerializer.Deserialize<ManagementRequest>(bytes, Wire.Json) ?? throw new InvalidDataException();
             if (caller.IsSystem || caller.Session <= 0) throw new UnauthorizedAccessException();
+            ServiceDiagnostics.Record(ServiceStage.ManagementRequestReceived);
             if (!await _gate.WaitAsync(TimeSpan.FromSeconds(2), ct))
                 reply = new(false, "Busy", "另一项操作正在进行，请稍后重试。");
             else
             {
-                try { reply = HandleManagement(caller, request); }
+                try { reply = await HandleManagement(caller, request, ct); }
                 finally { _gate.Release(); }
             }
+        }
+        catch (CredentialValidationUnavailableException ex)
+        {
+            ServiceDiagnostics.Record(ServiceStage.ManagementFailed, ex);
+            reply = new(false, "AccountVerificationUnavailable", "Windows 账户验证暂不可用，请稍后重试。");
+        }
+        catch (TimeoutException ex)
+        {
+            ServiceDiagnostics.Record(ServiceStage.ManagementFailed, ex);
+            reply = new(false, "AccountVerificationTimeout", "Windows 账户验证超时，请稍后重试。");
         }
         catch (UnauthorizedAccessException ex)
         {
@@ -84,27 +95,34 @@ internal sealed class Broker(Vault vault, Hardware hardware, ILogger<Broker> log
         await PipeReply.WriteManagementAsync(pipe, response, ct);
     }
 
-    private void RequirePassword(Caller caller, string user, string password)
+    private async Task RequirePassword(Caller caller, string user, string password, CancellationToken ct)
     {
         // Limit failed validations before LogonUser to reduce account lockout abuse.
         if (!_passwordAttempts.TryGetValue(caller.Sid, out var attempts)) _passwordAttempts[caller.Sid] = attempts = new();
         var now = DateTimeOffset.UtcNow;
         while (attempts.TryPeek(out var oldest) && now - oldest > TimeSpan.FromMinutes(5)) attempts.Dequeue();
         if (attempts.Count >= 5) throw new UnauthorizedAccessException();
-        try { WindowsIdentityChecks.VerifyPassword(caller, user, password); attempts.Clear(); }
+        try { await PasswordValidationWorker.VerifyAsync(caller, user, password, ct); attempts.Clear(); }
         catch (UnauthorizedAccessException) { attempts.Enqueue(now); throw; }
     }
 
-    private ManagementReply HandleManagement(Caller caller, ManagementRequest request)
+    private async Task<ManagementReply> HandleManagement(Caller caller, ManagementRequest request, CancellationToken ct)
     {
-        if (request.Operation == "Devices") return new(true, "Ok", "设备状态已更新。", Devices: hardware.List());
+        if (request.Operation == "Devices")
+        {
+            ServiceDiagnostics.Record(ServiceStage.DeviceListStarted);
+            var devices = hardware.List();
+            ServiceDiagnostics.Record(ServiceStage.DeviceListCompleted);
+            return new(true, "Ok", "设备状态已更新。", Devices: devices);
+        }
+        ServiceDiagnostics.Record(ServiceStage.VaultReadStarted);
         using var existing = vault.Load(caller.Sid);
+        ServiceDiagnostics.Record(ServiceStage.VaultReadCompleted);
         if (request.Operation == "Status") return new(true, "Ok", "本地服务已连接。", Snapshot(existing));
         var user = existing?.QualifiedUserName ?? request.UserName;
-        var traceBinding = request.Operation is "Enroll" or "ResumePending";
-        if (traceBinding) ServiceDiagnostics.Record(ServiceStage.PasswordValidationStarted);
-        RequirePassword(caller, user, request.Password);
-        if (traceBinding) ServiceDiagnostics.Record(ServiceStage.PasswordValidationCompleted);
+        ServiceDiagnostics.Record(ServiceStage.PasswordValidationStarted);
+        await RequirePassword(caller, user, request.Password, ct);
+        ServiceDiagnostics.Record(ServiceStage.PasswordValidationCompleted);
         switch (request.Operation)
         {
             case "Enroll":

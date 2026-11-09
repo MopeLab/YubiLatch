@@ -4,6 +4,8 @@ namespace YubiLatch.Service;
 
 internal enum ServiceStage
 {
+    ManagementRequestReceived, VaultReadStarted, VaultReadCompleted,
+    DeviceListStarted, DeviceListCompleted,
     PasswordValidationStarted, PasswordValidationCompleted, EmptySlotConfirmed,
     PendingBindingSaved, KeyProgrammingStarted, KeyProgrammingCompleted,
     TouchVerificationStarted, TouchVerificationCompleted, BindingActivated,

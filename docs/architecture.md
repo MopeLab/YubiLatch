@@ -28,6 +28,8 @@ Winlogon / LSA：最终验证 MSA 密码
 
 管理器不能请求、读取、导出密码或 HMAC 秘钥。绑定、删除、暂停、密码更新均要求当前账户密码重新认证，并检查 `LogonUserW` 返回 SID 与管道调用者 SID 一致。状态读取只返回本账户的非敏感信息。设备序列号仅用于定位；认证必须通过硬件 HMAC。
 
+Windows 账户验证由独立 LocalSystem 子进程执行。服务通过继承的匿名管道传入凭据，命令行仅包含工作模式标识。验证超时为 25 秒；超时会结束子进程并返回账户验证错误，避免本机认证调用长期占用服务。
+
 ## 认证与绑定
 
 - 使用 Yubico 官方 [.NET SDK](https://docs.yubico.com/yesdk/users-manual/application-otp/challenge-response.html)。只编程未配置的 OTP 长按槽位 2，20 字节随机秘钥，强制 `UseButton()`，并设置随机 6 字节槽位管理码防止任意软件更新触摸策略。不重置设备，不触碰 FIDO2、PIV、OpenPGP 或短按槽位。已有长按槽位一律拒绝覆盖。管理码可在账户重新认证后单独查看，删除绑定前应备份；不会导出 HMAC 秘钥。

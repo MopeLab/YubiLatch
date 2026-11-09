@@ -2,6 +2,8 @@ using System.Security.Principal;
 using YubiLatch.Service;
 
 // There is deliberately no console/debug mode that could create a vault under a different identity.
+if (args is ["--verify-password"])
+    return WindowsIdentity.GetCurrent().IsSystem ? await PasswordValidationWorker.RunAsync() : 1;
 if (!WindowsIdentity.GetCurrent().IsSystem || Environment.UserInteractive)
 {
     Console.Error.WriteLine("YubiLatch.Service 只能由 Windows 服务管理器以 LocalSystem 身份启动。");
